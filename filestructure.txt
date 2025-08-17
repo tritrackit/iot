@@ -1,0 +1,10 @@
+|-- .gitignore
+|-- diagram
+    |-- iot_server.drawio
+    |-- rfid_reader.drawio
+|-- iot_server
+    |-- iot_server.ino
+|-- LICENSE
+|-- README.md
+|-- rfid_reader
+    |-- rfid_reader.ino
