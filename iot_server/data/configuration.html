@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Configuration • ESP32 Portal</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>ESP32 • Configuration</h1>
+    <nav>
+      <a href="/">Home</a>
+      <button id="btnLogout">Logout</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <!-- Auth -->
+    <div class="card">
+      <h2>Auth</h2>
+      <form id="authForm">
+        <label>Username
+          <input type="text" id="authUser" required>
+        </label>
+        <label>New Password (leave blank to keep)
+          <div class="input-affix">
+            <input type="password" id="authPass" placeholder="••••••••">
+            <button type="button" id="toggleAuthPwd" class="icon-btn" aria-label="Show password" title="Show password">
+              <svg id="authEyeOpen" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7s10-7 10-7s-3-7-10-7m0 12a5 5 0 1 1 .001-10.001A5 5 0 0 1 12 17m0-8a3 3 0 1 0 .001 6.001A3 3 0 0 0 12 9"/></svg>
+              <svg id="authEyeOff" style="display:none" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M2 4.27L3.28 3L21 20.72L19.73 22l-2.32-2.32A10.68 10.68 0 0 1 12 19c-7 0-10-7-10-7a18.4 18.4 0 0 1 5.1-6.14L2 4.27m5.09 5.09A4.94 4.94 0 0 0 7 12a5 5 0 0 0 5 5c.69 0 1.35-.14 1.95-.39l-1.51-1.51c-.14.03-.29.05-.44.05a3 3 0 0 1-3-3c0-.15.02-.3.05-.44l-2-2M12 5c7 0 10 7 10 7a18.42 18.42 0 0 1-3.2 4.46l-1.43-1.43A10.4 10.4 0 0 0 20 12s-3-6-8-6c-.86 0-1.67.14-2.43.38L7.95 5.76C9.2 5.28 10.54 5 12 5Z"/></svg>
+            </button>
+          </div>
+        </label>
+        <div class="row">
+          <button type="button" id="authSave" class="primary">Save</button>
+          <button type="button" id="authCancel">Cancel</button>
+          <span id="authStatus" class="muted"></span>
+        </div>
+      </form>
+    </div>
+
+    <!-- API -->
+    <div class="card">
+      <h2>API</h2>
+      <form id="apiForm">
+        <label>API URL
+          <input type="url" id="apiUrl" placeholder="https://example.com/api/ingest" required>
+        </label>
+        <label>Interval (ms)
+          <input type="number" id="intervalMs" min="100" step="100" required>
+        </label>
+        <div class="row">
+          <button type="button" id="apiSave" class="primary">Save</button>
+          <button type="button" id="apiCancel">Cancel</button>
+          <span id="apiStatus" class="muted"></span>
+        </div>
+      </form>
+    </div>
+
+    <!-- Wi-Fi -->
+    <div class="card">
+      <h2>Wi-Fi (STA)</h2>
+      <form id="wifiForm">
+        <label>SSID
+          <input type="text" id="wifiSsid" placeholder="HomeWiFi" required>
+        </label>
+        <label>Password
+          <div class="input-affix">
+            <input type="password" id="wifiPass" placeholder="••••••••">
+            <button type="button" id="toggleWifiPwd" class="icon-btn" aria-label="Show password" title="Show password">
+              <svg id="wifiEyeOpen" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7s10-7 10-7s-3-7-10-7m0 12a5 5 0 1 1 .001-10.001A5 5 0 0 1 12 17m0-8a3 3 0 1 0 .001 6.001A3 3 0 0 0 12 9"/></svg>
+              <svg id="wifiEyeOff" style="display:none" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M2 4.27L3.28 3L21 20.72L19.73 22l-2.32-2.32A10.68 10.68 0 0 1 12 19c-7 0-10-7-10-7a18.4 18.4 0 0 1 5.1-6.14L2 4.27m5.09 5.09A4.94 4.94 0 0 0 7 12a5 5 0 0 0 5 5c.69 0 1.35-.14 1.95-.39l-1.51-1.51c-.14.03-.29.05-.44.05a3 3 0 0 1-3-3c0-.15.02-.3.05-.44l-2-2M12 5c7 0 10 7 10 7a18.42 18.42 0 0 1-3.2 4.46l-1.43-1.43A10.4 10.4 0 0 0 20 12s-3-6-8-6c-.86 0-1.67.14-2.43.38L7.95 5.76C9.2 5.28 10.54 5 12 5Z"/></svg>
+            </button>
+          </div>
+        </label>
+        <div class="row">
+          <button type="button" id="wifiSave" class="primary">Save</button>
+          <button type="button" id="wifiCancel">Cancel</button>
+          <button type="button" id="wifiConnect">Connect</button>
+          <span id="wifiStatus" class="muted"></span>
+        </div>
+      </form>
+      <div class="muted" id="wifiLive"></div>
+    </div>
+  </main>
+
+  <!-- Confirm modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="modalTitle">Confirm</h3>
+      <p id="modalText">Save changes?</p>
+      <div class="row">
+        <button id="modalYes" class="primary">Save</button>
+        <button id="modalNo">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/config.js"></script>
+</body>
+</html>
