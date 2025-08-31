@@ -236,70 +236,122 @@
                     |-- ArduinoJson.h
                     |-- ArduinoJson.hpp
                     |-- CMakeLists.txt
-            |-- AsyncTCP-esphome
-                |-- .github
-                    |-- dependabot.yml
-                    |-- stale.yml
-                    |-- workflows
-                        |-- publish.yml
-                        |-- push.yml
-                |-- .gitignore
+            |-- AsyncTCP
                 |-- .piopm
-                |-- .travis.yml
-                |-- arduino-cli.yaml
-                |-- CMakeLists.txt
-                |-- component.mk
                 |-- examples
-                    |-- ClientServer
-                        |-- Client
-                            |-- Client.ino
-                            |-- config.h
-                |-- Kconfig.projbuild
+                    |-- AsyncSend
+                        |-- AsyncSend.ino
+                    |-- Client
+                        |-- Client.ino
+                    |-- FetchWebsite
+                        |-- FetchWebsite.ino
                 |-- library.json
+                |-- library.properties
                 |-- LICENSE
                 |-- README.md
                 |-- src
                     |-- AsyncTCP.cpp
                     |-- AsyncTCP.h
-            |-- ESPAsyncWebServer-esphome
-                |-- .github
-                    |-- release-drafter.yml
-                    |-- scripts
-                        |-- install-arduino-core-esp32.sh
-                        |-- install-arduino-core-esp8266.sh
-                        |-- install-arduino-ide.sh
-                        |-- install-platformio.sh
-                        |-- on-push.sh
-                    |-- stale.yml
-                    |-- workflows
-                        |-- publish.yml
-                        |-- push.yml
-                        |-- release-drafter.yml
-                |-- .gitignore
+                    |-- AsyncTCPSimpleIntrusiveList.h
+                    |-- AsyncTCPVersion.h
+            |-- ESPAsyncWebServer
                 |-- .piopm
-                |-- .travis.yml
-                |-- CMakeLists.txt
-                |-- component.mk
                 |-- examples
+                    |-- AsyncResponseStream
+                        |-- AsyncResponseStream.ino
+                    |-- AsyncTunnel
+                        |-- AsyncTunnel.ino
+                    |-- Auth
+                        |-- Auth.ino
                     |-- CaptivePortal
                         |-- CaptivePortal.ino
-                    |-- regex_patterns
-                        |-- .test.build_flags
-                        |-- regex_patterns.ino
-                    |-- simple_server
-                        |-- simple_server.ino
-                |-- keywords.txt
+                    |-- CatchAllHandler
+                        |-- CatchAllHandler.ino
+                    |-- ChunkResponse
+                        |-- ChunkResponse.ino
+                    |-- ChunkRetryResponse
+                        |-- ChunkRetryResponse.ino
+                    |-- CORS
+                        |-- CORS.ino
+                    |-- EndBegin
+                        |-- EndBegin.ino
+                    |-- Filters
+                        |-- Filters.ino
+                    |-- FlashResponse
+                        |-- FlashResponse.ino
+                    |-- HeaderManipulation
+                        |-- HeaderManipulation.ino
+                    |-- Headers
+                        |-- Headers.ino
+                    |-- Json
+                        |-- Json.ino
+                    |-- Logging
+                        |-- Logging.ino
+                    |-- MessagePack
+                        |-- MessagePack.ino
+                    |-- Middleware
+                        |-- Middleware.ino
+                    |-- Params
+                        |-- Params.ino
+                    |-- PartitionDownloader
+                        |-- PartitionDownloader.ino
+                    |-- PerfTests
+                        |-- PerfTests.ino
+                    |-- RateLimit
+                        |-- RateLimit.ino
+                    |-- Redirect
+                        |-- Redirect.ino
+                    |-- RequestContinuation
+                        |-- RequestContinuation.ino
+                    |-- RequestContinuationComplete
+                        |-- RequestContinuationComplete.ino
+                    |-- ResumableDownload
+                        |-- ResumableDownload.ino
+                    |-- Rewrite
+                        |-- Rewrite.ino
+                    |-- ServerSentEvents
+                        |-- ServerSentEvents.ino
+                    |-- ServerSentEvents_PR156
+                        |-- ServerSentEvents_PR156.ino
+                    |-- ServerState
+                        |-- ServerState.ino
+                    |-- SkipServerMiddleware
+                        |-- SkipServerMiddleware.ino
+                    |-- SlowChunkResponse
+                        |-- SlowChunkResponse.ino
+                    |-- StaticFile
+                        |-- StaticFile.ino
+                    |-- Templates
+                        |-- Templates.ino
+                    |-- Upload
+                        |-- Upload.ino
+                    |-- WebSocket
+                        |-- WebSocket.ino
+                    |-- WebSocketEasy
+                        |-- WebSocketEasy.ino
                 |-- library.json
+                |-- library.properties
+                |-- LICENSE
                 |-- README.md
                 |-- src
                     |-- AsyncEventSource.cpp
                     |-- AsyncEventSource.h
+                    |-- AsyncJson.cpp
                     |-- AsyncJson.h
+                    |-- AsyncMessagePack.cpp
+                    |-- AsyncMessagePack.h
+                    |-- AsyncWebHeader.cpp
+                    |-- AsyncWebServerRequest.cpp
+                    |-- AsyncWebServerVersion.h
                     |-- AsyncWebSocket.cpp
                     |-- AsyncWebSocket.h
-                    |-- AsyncWebSynchronization.h
+                    |-- BackPort_SHA1Builder.cpp
+                    |-- BackPort_SHA1Builder.h
+                    |-- ChunkPrint.cpp
+                    |-- ChunkPrint.h
                     |-- ESPAsyncWebServer.h
-                    |-- StringArray.h
+                    |-- literals.h
+                    |-- Middleware.cpp
                     |-- WebAuthentication.cpp
                     |-- WebAuthentication.h
                     |-- WebHandlerImpl.h
@@ -308,7 +360,6 @@
                     |-- WebResponseImpl.h
                     |-- WebResponses.cpp
                     |-- WebServer.cpp
-                |-- _config.yml
             |-- integrity.dat
             |-- LoRa
                 |-- .piopm
@@ -404,6 +455,39 @@
                     |-- RTC_Millis.cpp
                     |-- RTC_PCF8523.cpp
                     |-- RTC_PCF8563.cpp
+|-- components
+    |-- api_http
+        |-- http_api.h
+        |-- http_api_async.cpp
+        |-- library.json
+    |-- domain
+        |-- library.json
+        |-- log_entry.h
+    |-- infra
+        |-- config_store.cpp
+        |-- config_store.h
+        |-- csv_log_repo.cpp
+        |-- library.json
+        |-- log_repo.h
+        |-- lora_port.h
+        |-- lora_port_arduino.cpp
+        |-- mem_log_repo.cpp
+        |-- net_client.h
+        |-- net_client_https.cpp
+        |-- rtc_clock.h
+        |-- rtc_ds3231.cpp
+        |-- sd_fs.cpp
+        |-- sd_fs.h
+        |-- spi_lock.cpp
+        |-- spi_lock.h
+    |-- services
+        |-- library.json
+        |-- lora_rx_service.cpp
+        |-- lora_rx_service.h
+        |-- uploader_service.cpp
+        |-- uploader_service.h
+        |-- wifi_manager.cpp
+        |-- wifi_manager.h
 |-- data
     |-- configuration.html
     |-- css
@@ -411,10 +495,11 @@
     |-- index.html
     |-- js
         |-- app.js
-        |-- config.js
+        |-- configuration.js
         |-- login.js
     |-- login.html
 |-- littlefs.bin
 |-- platformio.ini
+|-- README.md
 |-- src
     |-- main.cpp

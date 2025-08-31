@@ -2,7 +2,7 @@ async function postJSON(url, data) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    credentials: "include",              // ✅ store cookie from /api/login
+    credentials: "include",
     body: JSON.stringify(data)
   });
   return res;
@@ -17,7 +17,6 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   try {
     const res = await postJSON("/api/login", { username, password });
     if (res.ok) {
-      // tiny delay helps some browsers commit the cookie before nav
       setTimeout(() => { location.replace("/"); }, 50);
     } else {
       const j = await res.json().catch(() => ({}));
@@ -28,7 +27,6 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   }
 });
 
-/* === Show/Hide password toggle === */
 const pwd = document.getElementById("password");
 const toggle = document.getElementById("togglePwd");
 toggle?.addEventListener("click", () => {

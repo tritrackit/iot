@@ -1,0 +1,5 @@
+{
+  "name": "infra",
+  "version": "0.0.1",
+  "build": { "srcDir": ".", "includeDir": "." }
+}

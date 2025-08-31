@@ -1,0 +1,18 @@
+Mini Data Logger (SD + RTC)
+
+SDA (RTC): D21 (GPIO21)
+SCL (RTC): D22 (GPIO22)
+SCK (SD): D18 (GPIO18)
+MISO (SD): D19 (GPIO19)
+MOSI (SD): D23 (GPIO23)
+CS (SD): D13 (GPIO13)
+Power: 3V3 and GND shared
+LoRa Module (SX1276/RFM9x)
+
+NSS/CS: D27 (GPIO27)
+RST: D25 (GPIO25)
+DIO0: D26 (GPIO26)
+SCK: D18 (GPIO18, shared VSPI)
+MISO: D19 (GPIO19, shared VSPI)
+MOSI: D23 (GPIO23, shared VSPI)
+Power: 3V3 and GND shared
