@@ -692,130 +692,154 @@ bool HttpApi::begin(){
     }
   );
 
-   // /api/logs
+   // /api/logs  -> list UNSENT items from spool (files named LOG.<rfid>.<scanner>)
   server.on("/api/logs", HTTP_GET, [&, hasSession](AsyncWebServerRequest* req){
-    if (!(isLoggedIn || hasSession(req))) { sendJsonText(req,401,"{\"error\":\"unauthorized\"}"); return; }
+    if (!(isLoggedIn || hasSession(req))) {
+      sendJsonText(req, 401, "{\"error\":\"unauthorized\"}");
+      return;
+    }
 
+    // ---- params ----
     size_t limit = 100;
     if (req->hasParam("limit")) {
       long v = req->getParam("limit")->value().toInt();
       if (v > 0 && v < 2000) limit = (size_t)v;
     }
-    String fs = req->hasParam("fs") ? req->getParam("fs")->value() : "sd";
-    bool rawCsv = req->hasParam("raw");           // raw=1 -> return CSV instead of JSON
-    bool addHdr = req->hasParam("header");        // header=1 -> include header in raw CSV
 
-    const char* path = "/logs.csv";
-
-    std::vector<String> lines;
-    bool ok = false;
-
-    if (fs.equalsIgnoreCase("sd")) {
-      SDfs.lock();
-      ok = tailCsvLines_SD(path, limit, lines);
-      SDfs.unlock();
-    } else if (fs.equalsIgnoreCase("lfs") || fs.equalsIgnoreCase("littlefs")) {
-      ok = tailCsvLines_LFS(path, limit, lines);
-    } else {
-      sendJsonText(req, 400, "{\"error\":\"invalid_fs\"}");
-      return;
-    }
-    if (!ok) { sendJsonText(req, 404, "{\"error\":\"open_failed\"}"); return; }
-
-    // --- Normalize & drop header wherever it appears ---
-    auto isHeader = [](const String& s){
-      return s.startsWith("scanner,rfid,timestamp,code,message");
+    // ---- helpers ----
+    auto basenameOf = [](const String& path)->String {
+      int p = path.lastIndexOf('/');
+      return (p >= 0) ? path.substring(p+1) : path;
     };
-    // Trim blank tail lines that can appear with trailing '\n'
-    while (!lines.empty() && lines.back().length()==0) lines.pop_back();
+    auto parseSpoolName = [](const String& base, String& rfid, String& scanner)->bool {
+      // expect "LOG.<rfid>.<scanner>"
+      if (!base.startsWith("LOG.")) return false;
+      int d1 = base.indexOf('.', 4);   // first dot after "LOG."
+      if (d1 < 0) return false;
+      rfid    = base.substring(4, d1);
+      scanner = base.substring(d1 + 1);
+      return rfid.length() && scanner.length();
+    };
 
-    if (!lines.empty() && isHeader(lines.front()))  { lines.erase(lines.begin()); }
-    if (!lines.empty() && isHeader(lines.back()))   { lines.pop_back(); }
+    struct Item { String scanner; String rfid; String fname; };
+    std::vector<Item> items;
+    items.reserve(limit ? limit : 64);
 
-    if (rawCsv) {
-      // Build CSV (oldest -> newest). No header unless header=1 is requested.
-      String csv; csv.reserve((lines.size()+1) * 64);
-      if (addHdr) { csv += "scanner,rfid,timestamp,code,message\n"; }
-      for (int i = (int)lines.size()-1; i >= 0; --i) {
-        csv += lines[i]; csv += "\n";
-      }
-      auto* resp = req->beginResponse(200, "text/csv; charset=utf-8", csv);
-      resp->addHeader("Cache-Control", "no-store");
-      req->send(resp);
+    // ---- scan spool dir ----
+    const char* kSpoolDir = "/spool";
+    SDfs.lock();
+    File dir = SD.open(kSpoolDir);
+    if (!dir || !dir.isDirectory()) {
+      if (dir) dir.close();
+      SDfs.unlock();
+      sendJsonText(req, 200, "[]");
       return;
     }
 
-    // Build JSON (chronological ascending)
+    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+      if (!f.isDirectory()) {
+        String base = basenameOf(f.name());
+        String rfid, scanner;
+        if (parseSpoolName(base, rfid, scanner)) {
+          items.push_back({scanner, rfid, base});
+        }
+      }
+      f.close();
+      if (items.size() >= (limit ? (limit * 4) : 400)) break; // soft cap
+    }
+    dir.close();
+    SDfs.unlock();
+
+    // ---- limit (keep last N scanned; SD dir order is implementation-defined) ----
+    if (items.size() > limit) {
+      items.erase(items.begin(), items.end() - (ptrdiff_t)limit);
+    }
+
+    // ---- render JSON ----
     StaticJsonDocument<16384> doc;
     JsonArray arr = doc.to<JsonArray>();
-    for (int i = (int)lines.size()-1; i >= 0; --i) {
-      const String& ln = lines[i];
-      if (!ln.length()) continue;
-      int c1 = ln.indexOf(','); if (c1 < 0) continue;
-      int c2 = ln.indexOf(',', c1+1); if (c2 < 0) continue;
-      int c3 = ln.indexOf(',', c2+1); if (c3 < 0) continue;
-      int c4 = ln.indexOf(',', c3+1);
-
-      String scanner = ln.substring(0, c1);
-      String rfid    = ln.substring(c1+1, c2);
-      String ts      = ln.substring(c2+1, c3);
-      String code    = (c4 >= 0) ? ln.substring(c3+1, c4) : ln.substring(c3+1);
-      String msg     = (c4 >= 0) ? ln.substring(c4+1) : String("");
-
+    for (const auto& it : items) {
       JsonObject o = arr.createNestedObject();
-      o["scanner_id"] = scanner;
-      o["rfid"]       = rfid;
-      o["timestamp"]  = ts;
-      o["code"]       = code.toInt();
-      o["msg"]        = msg;
+      o["scanner_id"] = it.scanner;
+      o["rfid"]       = it.rfid;
+      o["timestamp"]  = "";   // no ts in filename
+      o["code"]       = 0;
+      o["msg"]        = "";
     }
-
     String out; serializeJson(arr, out);
     sendJsonText(req, 200, out);
   });
 
-
   // POST /api/logs/reset
-  // Recreates SD:/logs.csv with only the header and resets the upload cursor.
+  // Clears SD:/spool of all pending LOG.<rfid>.<scanner> files.
+  // Also removes /upload.cursor (legacy) if present.
   server.on("/api/logs/reset", HTTP_POST, [&, hasSession](AsyncWebServerRequest* req){
-    if (!(isLoggedIn || hasSession(req))) { sendJsonText(req, 401, "{\"error\":\"unauthorized\"}"); return; }
-
-    const char* LOGS = "/logs.csv";
-    const char* CURS = "/upload.cursor";
-
-    SDfs.lock();
-    if (!SDfs.isMounted()) { SDfs.unlock(); sendJsonText(req, 500, "{\"error\":\"sd_not_mounted\"}"); return; }
-
-    // Remove existing file (portable truncate)
-    (void)SD.remove(LOGS);
-
-    // Create with header only
-    bool ok = true;
-    File nf = SD.open(LOGS, FILE_WRITE);
-    if (!nf) {
-      ok = false;
-    } else {
-      nf.printf("scanner,rfid,timestamp,code,message\n");
-      nf.flush(); nf.close();
+    if (!(isLoggedIn || hasSession(req))) {
+      sendJsonText(req, 401, "{\"error\":\"unauthorized\"}");
+      return;
     }
 
-    // Reset uploader cursor so uploads start from the top again
-    bool cursorReset = SD.remove(CURS);
+    const char* kSpoolDir = "/spool";
+    const char* kCursor   = "/upload.cursor";
 
-    // Get file size for response
-    uint32_t sizeNow = 0;
-    File fsz = SD.open(LOGS, FILE_READ);
-    if (fsz) { sizeNow = (uint32_t)fsz.size(); fsz.close(); }
+    size_t removed = 0;
+    uint64_t bytesFreed = 0;
+    bool cursorDeleted = false;
+
+    SDfs.lock();
+
+    if (!SDfs.isMounted()) {
+      SDfs.unlock();
+      sendJsonText(req, 500, "{\"error\":\"sd_not_mounted\"}");
+      return;
+    }
+
+    // Open spool dir (create if missing to keep system consistent)
+    File dir = SD.open(kSpoolDir);
+    if (!dir) {
+      // No dir yet -> just ensure it exists after this call
+      SD.mkdir(kSpoolDir);
+    } else if (!dir.isDirectory()) {
+      // Something odd is at /spool; try to clean and recreate
+      dir.close();
+      (void)SD.remove(kSpoolDir);
+      SD.mkdir(kSpoolDir);
+    } else {
+      // Iterate and delete files inside /spool
+      for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+        if (f.isDirectory()) { f.close(); continue; }
+        // capture info before close
+        String name = f.name();        // may be "spool/..." or "/spool/..."
+        uint64_t sz = f.size();
+        f.close();
+
+        // Build absolute path if needed
+        String full = name;
+        if (!full.startsWith("/")) full = String(kSpoolDir) + "/" + full;
+
+        if (SD.remove(full)) {
+          removed++;
+          bytesFreed += sz;
+        }
+      }
+      dir.close();
+    }
+
+    // Make sure /spool exists after reset
+    SD.mkdir(kSpoolDir);
+
+    // Remove legacy cursor file (safe even if unused in spool-mode)
+    cursorDeleted = SD.remove(kCursor);
 
     SDfs.unlock();
 
-    if (!ok) { sendJsonText(req, 500, "{\"error\":\"create_failed\"}"); return; }
+    // Response
+    StaticJsonDocument<256> d;
+    d["ok"]             = true;
+    d["spool_cleared"]  = removed;                  // number of files deleted
+    d["bytes_freed"]    = (uint32_t)bytesFreed;     // truncated to 32-bit for payload
+    d["cursor_deleted"] = cursorDeleted;
 
-    StaticJsonDocument<192> d;
-    d["ok"] = true;
-    d["path"] = LOGS;
-    d["size"] = sizeNow;
-    d["cursor_reset"] = true;
     String out; serializeJson(d, out);
     sendJsonText(req, 200, out);
   });

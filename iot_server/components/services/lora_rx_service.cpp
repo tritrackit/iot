@@ -1,4 +1,3 @@
-// components/services/lora_rx_service.cpp
 #include "lora_rx_service.h"
 #include "domain/log_entry.h"
 #include <Arduino.h>
@@ -8,16 +7,13 @@
 
 extern SdFsImpl SDfs; // provided by main.cpp
 
-static constexpr const char* kLogsPath_SD = "/logs.csv"; // <-- SD.* expects root-relative
+static constexpr const char* kSpoolDir = "/spool";
 
 // --- Local validation helpers ---
 static bool parseAndValidate(const std::string& in,
                              std::string& scanner,
                              std::string& rfid) {
-  // quick overall length guard
   if (in.size() < 6 || in.size() > 64) return false;
-
-  // split "scanner,rfid"
   auto k = in.find(',');
   if (k == std::string::npos) return false;
 
@@ -30,7 +26,7 @@ static bool parseAndValidate(const std::string& in,
     if (!(std::isalnum(ch) || ch == '_' || ch == '-')) return false;
   }
 
-  // RFID: 8..32 hex chars; accept lowercase and normalize to uppercase
+  // rfid: 8..32 hex (normalize upper)
   if (rfid.size() < 8 || rfid.size() > 32) return false;
   for (char& ch : rfid) {
     if (ch >= 'a' && ch <= 'f') ch = char(ch - 'a' + 'A');
@@ -40,7 +36,6 @@ static bool parseAndValidate(const std::string& in,
 }
 
 bool LoraRxService::begin() {
-  // Create queue to decouple RF from I2C/SD work
   if (!queue_) queue_ = xQueueCreate(16, sizeof(Item*));
   if (!queue_) return false;
   if (!lora_.begin()) return false;
@@ -48,7 +43,6 @@ bool LoraRxService::begin() {
   lora_.onPacket([this](const std::string& p){
     std::string scanner, rfid;
     if (!parseAndValidate(p, scanner, rfid)) {
-      // Drop noise / malformed frames to avoid S-UNKNOWN pollution
       Serial.printf("[LoRa] Ignored invalid payload '%s'\n", p.c_str());
       return;
     }
@@ -63,10 +57,9 @@ bool LoraRxService::begin() {
 
 void LoraRxService::taskLoop() {
   for(;;) {
-    // Poll radio quickly
     lora_.pollOnce();
 
-    // Process a few queued items per loop to avoid starving other tasks
+    // drain a few per loop
     for (int i = 0; i < 4; i++) {
       Item* it = nullptr;
       if (xQueueReceive(queue_, &it, 0) != pdPASS) break;
@@ -82,37 +75,32 @@ void LoraRxService::taskLoop() {
       Serial.printf("[LoRa] RX scanner=%s rfid=%s ts=%s\n",
         e.scanner_id.c_str(), e.rfid.c_str(), e.ts_iso.c_str());
 
-      // Append to in-memory repo
+      // in-memory repo (debug/diagnostics pages still work)
       repo_.append(e);
 
-      // Append to SD CSV
+      // Spool to SD: /spool/LOG.<rfid>.<scanner>
       SDfs.lock();
       do {
-        if (!SDfs.isMounted()) { Serial.println("[LoRa] SD not mounted; skipping SD write"); break; }
+        if (!SDfs.isMounted()) { Serial.println("[LoRa] SD not mounted; skip spool"); break; }
+        if (!SD.exists(kSpoolDir)) SD.mkdir(kSpoolDir);
 
-        // Create file with header once
-        if (!SD.exists(kLogsPath_SD)) {
-          File nf = SD.open(kLogsPath_SD, FILE_WRITE);
-          if (!nf) { Serial.printf("[LoRa] Failed to create %s\n", kLogsPath_SD); break; }
-          nf.println("scanner,rfid,timestamp,code,message");
-          nf.close();
+        String fname = String(kSpoolDir) + "/LOG." + e.rfid.c_str() + "." + e.scanner_id.c_str();
+        // avoid accidental collision: if exists, add numeric suffix .2, .3...
+        if (SD.exists(fname)) {
+          for (uint32_t n=2; n<1000; ++n) {
+            String alt = fname + "." + String(n);
+            if (!SD.exists(alt)) { fname = alt; break; }
+          }
         }
 
-        File f = SD.open(kLogsPath_SD, FILE_APPEND);
-        if (!f) { Serial.printf("[LoRa] Failed to open %s for append\n", kLogsPath_SD); break; }
-
-        int n = f.printf("%s,%s,%s,%d,%s\n",
-                         e.scanner_id.c_str(),
-                         e.rfid.c_str(),
-                         e.ts_iso.c_str(),
-                         0,
-                         "");
+        File f = SD.open(fname, FILE_WRITE);
+        if (!f) { Serial.printf("[LoRa] Spool create failed: %s\n", fname.c_str()); break; }
+        // store timestamp on first line for uploader
+        f.println(e.ts_iso.c_str());
         f.flush(); f.close();
 
-        if (n <= 0) Serial.printf("[LoRa] Append wrote 0 bytes to %s\n", kLogsPath_SD);
-        else Serial.printf("[LoRa] Saved to SD: %s,%s,%s\n",
-                           e.scanner_id.c_str(), e.rfid.c_str(), e.ts_iso.c_str());
-      } while (false);
+        Serial.printf("[LoRa] Spooled %s (ts=%s)\n", fname.c_str(), e.ts_iso.c_str());
+      } while(false);
       SDfs.unlock();
 
       delete it;
