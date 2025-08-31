@@ -9,10 +9,15 @@ async function logout(){ await fetch("/api/logout",{method:"POST",credentials:"i
 $("btnLogout")?.addEventListener("click", logout);
 
 const modal=$("modal"); let modalOnYes=null;
-function openConfirm(title,text,onYes){
-  const t=$("modalTitle"), m=$("modalText");
+function openConfirm(title,text,labelYes,labelNo,onYes){
+  const t=$("modalTitle"), m=$("modalText"), lY=$("modalYes"), lN=$("modalNo");
   if(modal && t && m){
-    t.textContent=title; m.textContent=text; modalOnYes=onYes; modal.classList.remove("hidden");
+    t.textContent=title; 
+    m.textContent=text;
+    lY.textContent=labelYes && labelYes !== "" ? labelYes : "Save";
+    lN.textContent=labelNo && labelNo !== "" ? labelNo : "Cancel";
+    modalOnYes=onYes; 
+    modal.classList.remove("hidden");
   } else {
     (async()=>{ try{ if(onYes) await onYes(); }catch(e){ console.error(e); } })();
   }
@@ -60,19 +65,40 @@ async function init(){
     setMsg($("wifiStatus"), "Failed to load config");
   }
 
-  const form=$("wifiForm");
-  if(form){
-    form.querySelectorAll("input, textarea, select").forEach(el=>{ el.dataset.original = el.value || ""; });
-    function checkDirty(){ let d=false; form.querySelectorAll("input, textarea, select").forEach(el=>{ if(el.value!==el.dataset.original) d=true; }); $("wifiSave").disabled=!d; $("wifiConnect").disabled=d; }
-    form.addEventListener("input",checkDirty); form.addEventListener("change",checkDirty);
+  function registerFormChange(formId, saveId, cancelId) {
+    const form = $(formId);
+    const saveBtn = $(saveId);
+    const cancelBtn = $(cancelId);
+    if (form) {
+      form.querySelectorAll("input, textarea, select").forEach((el) => {
+        el.dataset.original = el.value || "";
+      });
+      function checkDirty() {
+        "";
+        let d = false;
+        form.querySelectorAll("input, textarea, select").forEach((el) => {
+          if (el.value !== el.dataset.original) d = true;
+        });
+        if(saveBtn) saveBtn.disabled = !d;
+        if(cancelBtn) cancelBtn.disabled = d;
+      }
+      form.addEventListener("input", checkDirty);
+      form.addEventListener("change", checkDirty);
 
-    $("wifiSave") && ($("wifiSave").disabled = true);
-    $("wifiConnect") && ($("wifiConnect").disabled = false);
+      if(saveBtn) saveBtn.disabled = true;
+      if(cancelBtn) cancelBtn.disabled = true;
+    }
   }
 
+const apForm = registerFormChange("apForm", "apSave", "");
+const wifiForm = registerFormChange("wifiForm", "wifiSave", "wifiCancel");
+const authForm = registerFormChange("authForm", "authSave", "authCancel");
+const apiForm = registerFormChange("apiForm", "apiSave", "apiCancel");
   
   $("authSave")?.addEventListener("click",()=>{
-    openConfirm("Save Auth","Update credentials?", async()=>{
+    openConfirm("Save Auth","Update credentials?", null, null, async()=>{
+    $("authSave").disabled=true;
+      modal.classList.add("hidden");
       const auth_user = $("authUser").value.trim();
       const auth_password = $("authPass").value;
       await apiPost("/api/config", {type:"auth", auth_user, auth_password});
@@ -85,7 +111,9 @@ async function init(){
   });
 
   $("apiSave")?.addEventListener("click",()=>{
-    openConfirm("Save API","Save URL/interval?", async()=>{
+    openConfirm("Save API","Save URL/interval?", null, null, async()=>{
+    $("apiSave").disabled=true;
+      modal.classList.add("hidden");
       const api_url = $("apiUrl").value.trim(); const upload_interval = Number($("intervalMs").value||0);
       await apiPost("/api/config", {type:"api", api_url, upload_interval}); setMsg($("apiStatus"),"Saved!");
     });
@@ -96,21 +124,24 @@ async function init(){
   });
 
   $("wifiSave")?.addEventListener("click",()=>{
-    openConfirm("Save WiFi","Save STA SSID/password?", async()=>{
+    openConfirm("Save WiFi","Save STA SSID/password?", null, null, async()=>{
+    $("wifiSave").disabled=true;
+      modal.classList.add("hidden");
       const wifi_sta_ssid=$("wifiSsid").value.trim(); const wifi_sta_password=$("wifiPass").value;
       await apiPost("/api/config", {type:"sta", wifi_sta_ssid, wifi_sta_password});
-      if(form){ form.querySelectorAll("input, textarea, select").forEach(el=>{ el.dataset.original = el.value || ""; }); }
+      if(wifiForm){ wifiForm.querySelectorAll("input, textarea, select").forEach(el=>{ el.dataset.original = el.value || ""; }); }
       $("wifiSave").disabled=true; $("wifiConnect").disabled=false; setMsg($("wifiStatus"),"Saved!");
     });
   });
   $("wifiCancel")?.addEventListener("click", async()=>{
-    try{ const c=await apiGet("/api/config"); $("wifiSsid").value=c.wifi_sta_ssid??""; $("wifiPass").value=c.wifi_sta_password??""; if(form){ form.querySelectorAll("input, textarea, select").forEach(el=>{ el.dataset.original = el.value || ""; }); $("wifiSave").disabled=true; $("wifiConnect").disabled=false; } }catch{}
+    try{ const c=await apiGet("/api/config"); $("wifiSsid").value=c.wifi_sta_ssid??""; $("wifiPass").value=c.wifi_sta_password??""; if(wifiForm){ wifiForm.querySelectorAll("input, textarea, select").forEach(el=>{ el.dataset.original = el.value || ""; }); $("wifiSave").disabled=true; $("wifiConnect").disabled=false; } }catch{}
     setMsg($("wifiStatus"),"Cancelled");
   });
 
   $("wifiConnect")?.addEventListener("click", async()=>{
     $("wifiConnect").disabled=true;
     $("wifiConnect").innerText="Connecting...";
+      modal.classList.add("hidden");
     const ssid=$("wifiSsid").value.trim(); const password=$("wifiPass").value;
     if(!ssid){ setMsg($("wifiStatus"),"SSID required"); $("wifiConnect").disabled=true; return; }
     $("wifiStatus").textContent="Connecting...";
@@ -125,19 +156,61 @@ async function init(){
   $("apSave")?.addEventListener("click", async()=>{
     const wifi_ap_ssid=$("apSsid").value.trim(); const wifi_ap_password=$("apPass").value;
     try{
+        $("apSave").disabled=true;
+        modal.classList.add("hidden");
       const res = await apiPost("/api/config", {type:"ap", wifi_ap_ssid, wifi_ap_password});
+        $("apSave").disabled=false;
       if(res && res.ap_change_pending){ setMsg($("apStatus"),"Saved. AP changes apply after reboot."); }
       else { setMsg($("apStatus"),"Saved!"); }
-    } catch{ setMsg($("apStatus"),"Save failed"); }
+    } catch{ 
+      setMsg($("apStatus"),"Save failed");
+
+        $("apSave").disabled=false;
+     }
+  });
+
+  $("btnResetLogs")?.addEventListener("click", ()=>{
+    openConfirm("Reset Logs","Are you sure you want to reset logs now?", "Yes", null, async()=>{
+      try{
+        $("btnResetLogs").disabled=true;
+        $("btnReboot").disabled=true;
+        modal.classList.add("hidden");
+      $("sysStatus").textContent='Resetting logs...';
+        await fetch('/api/logs/reset',{method:'POST', credentials:'include'});
+        $("sysStatus").textContent='';
+        $("btnResetLogs").disabled=false;
+        $("btnReboot").disabled=false;
+      }catch{
+        
+        $("sysStatus").textContent='';
+        $("btnResetLogs").disabled=false;
+        $("btnReboot").disabled=false;
+        
+      }
+      setTimeout(()=>{ try{  location.href = 'http://192.168.4.1/'; }catch{} }, 200);
+    });
   });
 
   $("btnReboot")?.addEventListener("click", ()=>{
-    openConfirm("Reboot Device","Are you sure you want to reboot now?", async()=>{
+    openConfirm("Reboot Device","Are you sure you want to reboot now?", "Yes", null, async()=>{
       try{
+        $("btnResetLogs").disabled=true;
+        $("btnReboot").disabled=true;
+        $("sysStatus").textContent='Rebooting...';
+        modal.classList.add("hidden");
         await fetch('/api/reboot',{method:'POST', credentials:'include'});
-      }catch{}
-      $("rebootStatus").textContent='Rebooting...';
-      setTimeout(()=>{ try{ location.href = "/" }catch{} }, 200);
+        
+        $("sysStatus").textContent='';
+        $("btnResetLogs").disabled=false;
+        $("btnReboot").disabled=false;
+      }catch{
+        
+        $("sysStatus").textContent='';
+        $("btnResetLogs").disabled=false;
+        $("btnReboot").disabled=false;
+
+      }
+      setTimeout(()=>{ try{ location.href = 'http://192.168.4.1/'; }catch{} }, 200);
     });
   });
 

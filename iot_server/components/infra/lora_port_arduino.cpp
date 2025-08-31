@@ -61,6 +61,12 @@ public:
       while (LoRa.available()) payload.push_back((char)LoRa.read());
     }
     spi_unlock();
+    
+    // NEW: drop empty payloads early — prevents bogus S-UNKNOWN
+    if (payload.empty()) {
+      Serial.println("[LoRaRF] RX empty payload; ignored");
+      return;
+    }
     // Debug print raw RX
     if (hadHeader){
       Serial.printf("[LoRaRF] RX net=0x%02X dst=0x%02X src=0x%02X seq=%u len=%u rssi=%d snr=%.1f payload='%s'\n",

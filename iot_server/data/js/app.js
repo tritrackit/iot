@@ -1,3 +1,8 @@
+
+function $(id){ return document.getElementById(id); }
+function setMsg(el, text){ if(!el) return; el.textContent = text; setTimeout(()=>{ if(el) el.textContent=""; },1500); }
+
+
 async function apiGet(url) {
   const res = await fetch(url, { credentials: "include" });
   if (!res.ok) throw new Error(res.statusText);
@@ -13,7 +18,25 @@ async function logout() {
   await fetch("/api/logout", { method: "POST", credentials: "include" });
   location.href = "/login";
 }
-document.getElementById("btnLogout")?.addEventListener("click", logout);
+$("btnLogout")?.addEventListener("click", logout);
+
+const modal=$("modal"); let modalOnYes=null;
+function openConfirm(title,text,labelYes,labelNo,onYes){
+  const t=$("modalTitle"), m=$("modalText"), lY=$("modalYes"), lN=$("modalNo");
+  if(modal && t && m){
+    t.textContent=title; 
+    m.textContent=text;
+    lY.textContent=labelYes && labelYes !== "" || "Yes";
+    lN.textContent=labelNo && labelNo !== "" || "Cancel";
+    modalOnYes=onYes; 
+    modal.classList.remove("hidden");
+  } else {
+    (async()=>{ try{ if(onYes) await onYes(); }catch(e){ console.error(e); } })();
+  }
+}
+$("modalYes")?.addEventListener("click", async()=>{ try{ if(modalOnYes) await modalOnYes(); } finally { modal?.classList.add("hidden"); } });
+$("modalNo")?.addEventListener("click", ()=> modal?.classList.add("hidden"));
+
 
 (async () => {
   try {
@@ -23,9 +46,9 @@ document.getElementById("btnLogout")?.addEventListener("click", logout);
     return;
   }
 
-  const startBtn = document.getElementById("btnStartUpload");
-  const statusText = document.getElementById("uploadStatus");
-  const stopBtn = document.getElementById('btnStopUpload');
+  const startBtn = $("btnStartUpload");
+  const statusText = $("uploadStatus");
+  const stopBtn = $('btnStopUpload');
   async function refreshUploadState(){
     try{
       const st = await apiGet('/api/upload/status');
@@ -40,19 +63,21 @@ document.getElementById("btnLogout")?.addEventListener("click", logout);
     }
   }
   startBtn?.addEventListener('click', async()=>{
-    if (!confirm('Start automatic upload?')) return;
-    try{ await apiPost('/api/upload/start', {}); await refreshUploadState(); alert('Upload started'); }
-    catch(e){ alert('Failed to start: '+e); }
+    openConfirm("Start automatic upload?", "Turn On Auto Upload", null, null, async()=>{
+      try{ await apiPost('/api/upload/start', {}); await refreshUploadState(); alert('Upload started'); }
+      catch(e){ alert('Failed to start: '+e); }
+    });
   });
   stopBtn?.addEventListener('click', async()=>{
-    if (!confirm('Stop automatic upload?')) return;
-    try{ await apiPost('/api/upload/stop', {}); await refreshUploadState(); }
-    catch(e){ alert('Failed to stop: '+e); }
+    openConfirm("Stop automatic upload?", "", null, null, async()=>{
+      try{ await apiPost('/api/upload/stop', {}); await refreshUploadState(); }
+      catch(e){ alert('Failed to stop: '+e); }
+    });
   });
   refreshUploadState();
   setInterval(refreshUploadState, 5000);
 
-  const body = document.getElementById("logsBody");
+  const body = $("logsBody");
   body.innerHTML = `<tr><td colspan="3">Loading…</td></tr>`;
 
   try {
@@ -63,6 +88,7 @@ document.getElementById("btnLogout")?.addEventListener("click", logout);
       const tr = document.createElement("tr");
       const status = (r.sent ? 'Sent' : (r.message || 'Pending'));
       tr.innerHTML = `
+        <td>${r.scanner_id ?? ""}</td>
         <td>${r.rfid ?? ""}</td>
         <td>${r.timestamp ?? ""}</td>
         <td>${status}</td>

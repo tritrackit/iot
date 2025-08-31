@@ -79,7 +79,7 @@ void setup(){
   LogRepo* repo = makeMemLogRepo();
   repo->ensureReady();
   auto* https = makeNetClientHttps();
-  static UploaderService up(*repo, *https);
+  static UploaderService up(*repo, *https, SDfs);   // <-- pass SD handle
   {
     UploadCfg cfg; cfg.api = ""; cfg.interval_ms = 15000; cfg.batch_size = 10; up.set(cfg);
   }

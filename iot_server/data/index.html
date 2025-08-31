@@ -34,9 +34,10 @@
       <table class="table" id="logsTable">
         <thead>
           <tr>
-            <th>RFID</th>
             <th>Scanner ID</th> <!-- was “Scanner Code” -->
+            <th>RFID</th>
             <th>Timestamp</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody id="logsBody">
@@ -48,6 +49,18 @@
     </div>
   </main>
 
+
+  <!-- Confirm modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="modalTitle">Confirm</h3>
+      <p id="modalText">Save changes?</p>
+      <div class="row">
+        <button id="modalYes" class="primary">Save</button>
+        <button id="modalNo">Cancel</button>
+      </div>
+    </div>
+  </div>
   <script src="/js/app.js?v=1"></script>
 </body>
 

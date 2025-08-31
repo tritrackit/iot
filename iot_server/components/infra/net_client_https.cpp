@@ -9,6 +9,10 @@ public:
                 int& code, std::string& resp,
                 const std::string& apiKey = std::string()) override {
     HTTPClient http;
+    WiFiClientSecure client;
+    client.setInsecure(); // or setCACert(...)
+    client.setTimeout(7000);       // read timeout
+    http.setTimeout(7000);         // total transfer timeout
     String surl = url.c_str();
     surl.toLowerCase();
     bool isHttps = surl.startsWith("https://");

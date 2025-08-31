@@ -17,7 +17,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   try {
     const res = await postJSON("/api/login", { username, password });
     if (res.ok) {
-      setTimeout(() => { location.replace("/"); }, 50);
+      setTimeout(() => { location.href = 'http://192.168.4.1/'; }, 50);
     } else {
       const j = await res.json().catch(() => ({}));
       msg.textContent = j.error || "Login failed";

@@ -34,6 +34,19 @@ static SemaphoreHandle_t g_lfs_mutex = nullptr;
 static inline void lfs_lock(){ if (g_lfs_mutex) xSemaphoreTake(g_lfs_mutex, portMAX_DELAY); }
 static inline void lfs_unlock(){ if (g_lfs_mutex) xSemaphoreGive(g_lfs_mutex); }
 
+// Small MIME guesser (good enough for our UI)
+const char* guessMime(const String& path) {
+  String p = path; p.toLowerCase();
+  if (p.endsWith(".html") || p.endsWith(".htm")) return "text/html; charset=utf-8";
+  if (p.endsWith(".js"))   return "application/javascript";
+  if (p.endsWith(".css"))  return "text/css; charset=utf-8";
+  if (p.endsWith(".json")) return "application/json; charset=utf-8";
+  if (p.endsWith(".csv"))  return "text/csv; charset=utf-8";
+  if (p.endsWith(".ico"))  return "image/x-icon";
+  if (p.endsWith(".txt"))  return "text/plain; charset=utf-8";
+  return "application/octet-stream";
+}
+
 static bool readAllFileFS(const char* path, String& out){
   lfs_lock();
   File f = LittleFS.open(path, "r");
@@ -58,6 +71,12 @@ static bool readAllFileFS(const char* path, String& out){
 static void sendJson(AsyncWebServerRequest* req, int code, const JsonVariantConst& v){
   String s; serializeJson(v, s);
   req->send(code, "application/json", s);
+}
+// Put these in the same helper section near the top of http_api_async.cpp
+static void sendJsonText(AsyncWebServerRequest* req, int code, const String& body) {
+  auto* resp = req->beginResponse(code, "application/json; charset=utf-8", body);
+  resp->addHeader("Cache-Control", "no-store");
+  req->send(resp);
 }
 static void sendJsonText(AsyncWebServerRequest* req, int code, const char* text){
   req->send(code, "application/json", text);
@@ -92,7 +111,105 @@ static const char* authModeName(wifi_auth_mode_t m){
     default: return "UNKNOWN";
   }
 }
+static void splitLinesFromTail(const String& chunk, std::vector<String>& out, bool appendToFirst) {
+  int start = 0;
+  while (true) {
+    int nl = chunk.indexOf('\n', start);
+    if (nl < 0) {
+      String tail = chunk.substring(start);
+      if (appendToFirst && !out.empty()) {
+        out.front() = tail + out.front();
+      } else {
+        if (tail.length()) out.insert(out.begin(), tail);
+      }
+      break;
+    }
+    String line = chunk.substring(start, nl); // no '\n'
+    // push to front to preserve reverse scan
+    out.insert(out.begin(), line);
+    start = nl + 1;
+  }
+}
 
+// --- helper: tail last N lines from SD (efficient backward read)
+static bool tailCsvLines_SD(const char* path, size_t maxLines, std::vector<String>& outLines) {
+  outLines.clear();
+  File f = SD.open(path, FILE_READ);
+  if (!f) return false;
+
+  const size_t CHUNK = 1024;
+  size_t size = f.size();
+  if (size == 0) { f.close(); return true; }
+
+  // Work backwards from end of file
+  long pos = (long)size;
+  bool firstChunk = true;
+
+  while (pos > 0 && outLines.size() < maxLines + 1 /* include potential header to filter */) {
+    size_t toRead = (pos >= (long)CHUNK) ? CHUNK : (size_t)pos;
+    pos -= (long)toRead;
+
+    f.seek(pos);
+    String chunk; chunk.reserve(toRead);
+    for (size_t i = 0; i < toRead; ++i) chunk += (char)f.read();
+
+    // For the very last portion (end of file), ensure trailing segment gets included
+    bool appendToFirst = !firstChunk;
+    splitLinesFromTail(chunk, outLines, appendToFirst);
+    firstChunk = false;
+  }
+
+  f.close();
+
+  // Now outLines is newest→oldest because we inserted at front while walking backward.
+  // Trim to maxLines (excluding header if present).
+  // Detect header (optional)
+  if (!outLines.empty()) {
+    const String& first = outLines.front();
+    if (first.startsWith("scanner,rfid,timestamp")) {
+      // Drop header for JSON parsing; keep it for CSV raw mode as needed
+      // We'll handle header decision in the endpoint.
+    } else {
+      // If the *last* line looks like header (because of reverse merging), move it to front
+      // Typically not needed with our logic; keep simple.
+    }
+  }
+
+  // Keep at most maxLines + (optional 1 header)
+  if (outLines.size() > maxLines + 1) {
+    // Preserve newest lines (front is newest due to reverse insert)
+    outLines.erase(outLines.begin() + (maxLines + 1), outLines.end());
+  }
+
+  return true;
+}
+
+// --- helper: tail last N lines from LittleFS (for completeness)
+static bool tailCsvLines_LFS(const char* path, size_t maxLines, std::vector<String>& outLines) {
+  outLines.clear();
+  File f = LittleFS.open(path, "r");
+  if (!f) return false;
+  // Simpler approach (files here are usually small): read all and split
+  String all; all.reserve(f.size() ? f.size() : 1024);
+  while (f.available()) all += (char)f.read();
+  f.close();
+
+  // Split into lines
+  std::vector<String> lines;
+  int start = 0;
+  while (true) {
+    int nl = all.indexOf('\n', start);
+    if (nl < 0) { String tail = all.substring(start); if (tail.length()) lines.push_back(tail); break; }
+    lines.push_back(all.substring(start, nl));
+    start = nl + 1;
+  }
+  // Take last maxLines + optional header
+  if (lines.size() > maxLines + 1) {
+    lines.erase(lines.begin(), lines.end() - (maxLines + 1));
+  }
+  outLines = std::move(lines);
+  return true;
+}
 // ---- REST ----
 static void installWifiRoutes(ConfigStore& store){
   // GET /api/wifi/status
@@ -575,36 +692,132 @@ bool HttpApi::begin(){
     }
   );
 
-  // /api/logs
-  server.on("/api/logs", HTTP_GET, [this](AsyncWebServerRequest* req){
-    // Optional ?limit=N (default 100) to keep response small and quick
-    uint32_t limit = 100;
-    if (req->hasParam("limit")){
-      String v = req->getParam("limit")->value(); uint32_t n = v.toInt(); if (n>0 && n<=1000) limit = n;
+   // /api/logs
+  server.on("/api/logs", HTTP_GET, [&, hasSession](AsyncWebServerRequest* req){
+    if (!(isLoggedIn || hasSession(req))) { sendJsonText(req,401,"{\"error\":\"unauthorized\"}"); return; }
+
+    size_t limit = 100;
+    if (req->hasParam("limit")) {
+      long v = req->getParam("limit")->value().toInt();
+      if (v > 0 && v < 2000) limit = (size_t)v;
     }
-    auto rows = repo_.listAll(limit);
-    // Stream response to avoid large intermediate buffers and long blocking
-    auto* resp = req->beginResponseStream("application/json");
-    resp->addHeader("Cache-Control", "no-store");
-    resp->print("[");
-    for (size_t i=0;i<rows.size();++i){
-      const auto& e = rows[i];
-      if (i) resp->print(",");
-      // Manual JSON to avoid per-item allocations
-      resp->print("{\"scanner_id\":\""); resp->print(e.scanner_id.c_str()); resp->print("\",");
-      resp->print("\"rfid\":\""); resp->print(e.rfid.c_str()); resp->print("\",");
-      resp->print("\"timestamp\":\""); resp->print(e.ts_iso.c_str()); resp->print("\",");
-      resp->print("\"sent\":"); resp->print(e.sent?"true":"false"); resp->print(",");
-      resp->print("\"message\":\"");
-      // escape quotes and backslashes in message minimally
-      for (char c : e.message){
-        if (c=='\\' || c=='"') resp->write((uint8_t)'\\');
-        resp->write((uint8_t)c);
+    String fs = req->hasParam("fs") ? req->getParam("fs")->value() : "sd";
+    bool rawCsv = req->hasParam("raw");           // raw=1 -> return CSV instead of JSON
+    bool addHdr = req->hasParam("header");        // header=1 -> include header in raw CSV
+
+    const char* path = "/logs.csv";
+
+    std::vector<String> lines;
+    bool ok = false;
+
+    if (fs.equalsIgnoreCase("sd")) {
+      SDfs.lock();
+      ok = tailCsvLines_SD(path, limit, lines);
+      SDfs.unlock();
+    } else if (fs.equalsIgnoreCase("lfs") || fs.equalsIgnoreCase("littlefs")) {
+      ok = tailCsvLines_LFS(path, limit, lines);
+    } else {
+      sendJsonText(req, 400, "{\"error\":\"invalid_fs\"}");
+      return;
+    }
+    if (!ok) { sendJsonText(req, 404, "{\"error\":\"open_failed\"}"); return; }
+
+    // --- Normalize & drop header wherever it appears ---
+    auto isHeader = [](const String& s){
+      return s.startsWith("scanner,rfid,timestamp,code,message");
+    };
+    // Trim blank tail lines that can appear with trailing '\n'
+    while (!lines.empty() && lines.back().length()==0) lines.pop_back();
+
+    if (!lines.empty() && isHeader(lines.front()))  { lines.erase(lines.begin()); }
+    if (!lines.empty() && isHeader(lines.back()))   { lines.pop_back(); }
+
+    if (rawCsv) {
+      // Build CSV (oldest -> newest). No header unless header=1 is requested.
+      String csv; csv.reserve((lines.size()+1) * 64);
+      if (addHdr) { csv += "scanner,rfid,timestamp,code,message\n"; }
+      for (int i = (int)lines.size()-1; i >= 0; --i) {
+        csv += lines[i]; csv += "\n";
       }
-      resp->print("\"}");
+      auto* resp = req->beginResponse(200, "text/csv; charset=utf-8", csv);
+      resp->addHeader("Cache-Control", "no-store");
+      req->send(resp);
+      return;
     }
-    resp->print("]");
-    req->send(resp);
+
+    // Build JSON (chronological ascending)
+    StaticJsonDocument<16384> doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (int i = (int)lines.size()-1; i >= 0; --i) {
+      const String& ln = lines[i];
+      if (!ln.length()) continue;
+      int c1 = ln.indexOf(','); if (c1 < 0) continue;
+      int c2 = ln.indexOf(',', c1+1); if (c2 < 0) continue;
+      int c3 = ln.indexOf(',', c2+1); if (c3 < 0) continue;
+      int c4 = ln.indexOf(',', c3+1);
+
+      String scanner = ln.substring(0, c1);
+      String rfid    = ln.substring(c1+1, c2);
+      String ts      = ln.substring(c2+1, c3);
+      String code    = (c4 >= 0) ? ln.substring(c3+1, c4) : ln.substring(c3+1);
+      String msg     = (c4 >= 0) ? ln.substring(c4+1) : String("");
+
+      JsonObject o = arr.createNestedObject();
+      o["scanner_id"] = scanner;
+      o["rfid"]       = rfid;
+      o["timestamp"]  = ts;
+      o["code"]       = code.toInt();
+      o["msg"]        = msg;
+    }
+
+    String out; serializeJson(arr, out);
+    sendJsonText(req, 200, out);
+  });
+
+
+  // POST /api/logs/reset
+  // Recreates SD:/logs.csv with only the header and resets the upload cursor.
+  server.on("/api/logs/reset", HTTP_POST, [&, hasSession](AsyncWebServerRequest* req){
+    if (!(isLoggedIn || hasSession(req))) { sendJsonText(req, 401, "{\"error\":\"unauthorized\"}"); return; }
+
+    const char* LOGS = "/logs.csv";
+    const char* CURS = "/upload.cursor";
+
+    SDfs.lock();
+    if (!SDfs.isMounted()) { SDfs.unlock(); sendJsonText(req, 500, "{\"error\":\"sd_not_mounted\"}"); return; }
+
+    // Remove existing file (portable truncate)
+    (void)SD.remove(LOGS);
+
+    // Create with header only
+    bool ok = true;
+    File nf = SD.open(LOGS, FILE_WRITE);
+    if (!nf) {
+      ok = false;
+    } else {
+      nf.printf("scanner,rfid,timestamp,code,message\n");
+      nf.flush(); nf.close();
+    }
+
+    // Reset uploader cursor so uploads start from the top again
+    bool cursorReset = SD.remove(CURS);
+
+    // Get file size for response
+    uint32_t sizeNow = 0;
+    File fsz = SD.open(LOGS, FILE_READ);
+    if (fsz) { sizeNow = (uint32_t)fsz.size(); fsz.close(); }
+
+    SDfs.unlock();
+
+    if (!ok) { sendJsonText(req, 500, "{\"error\":\"create_failed\"}"); return; }
+
+    StaticJsonDocument<192> d;
+    d["ok"] = true;
+    d["path"] = LOGS;
+    d["size"] = sizeNow;
+    d["cursor_reset"] = true;
+    String out; serializeJson(d, out);
+    sendJsonText(req, 200, out);
   });
 
   // === Uploader controls ===
@@ -649,10 +862,14 @@ bool HttpApi::begin(){
     sendJson(req,200,d.as<JsonVariantConst>());
   });
 
+  // /api/upload/start  -> start uploader (CSV by default), non-blocking
   server.on("/api/upload/start", HTTP_POST, [&, hasSession](AsyncWebServerRequest* req){
-    if (!(isLoggedIn || hasSession(req))) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+    if (!(isLoggedIn || hasSession(req))) {
+      req->send(401, "application/json", "{\"error\":\"unauthorized\"}");
+      return;
+    }
 
-    // Build effective config (prefer SD), but avoid heavy work inside handler
+    // Build effective config (prefer SD)
     UploadCfg uc = up_.cfg();
     if (uc.api.empty() || uc.interval_ms == 0){
       String raw; StaticJsonDocument<512> cfg;
@@ -663,6 +880,26 @@ bool HttpApi::begin(){
       }
     }
 
+    // Source: FORCE CSV by default (oldest -> newest from /logs.csv)
+    uc.use_sd_csv = true;
+    uc.csv_path   = "/logs.csv";
+    if (req->hasParam("source")) {
+      String src = req->getParam("source")->value();
+      if (src.equalsIgnoreCase("repo")) uc.use_sd_csv = false;  // optional fallback
+    }
+    if (req->hasParam("csv")) {
+      uc.csv_path = req->getParam("csv")->value().c_str();
+    }
+
+    Serial.printf(uc.use_sd_csv ? "[UPLOAD] Using SD CSV '%s'\n" : "[UPLOAD] Using REPO\n", uc.csv_path.c_str());
+
+    // Optional: allow client to reset CSV cursor so upload restarts from the top
+    bool resetCursor = req->hasParam("resetCursor");
+
+
+    Serial.printf("[UPLOAD] Start request: api='%s' interval=%ums batch=%u csv='%s' resetCursor=%d\n",
+      uc.api.c_str(), (unsigned)uc.interval_ms, (unsigned)uc.batch_size, uc.csv_path.c_str(), resetCursor ? 1 : 0);
+    // Validate
     if (uc.api.empty()){ req->send(400, "application/json", "{\"error\":\"missing_api_url\"}"); return; }
     if (uc.interval_ms <= 1000){ req->send(400, "application/json", "{\"error\":\"interval_too_low\"}"); return; }
     if (WiFi.status() != WL_CONNECTED){ req->send(409, "application/json", "{\"error\":\"sta_not_connected\"}"); return; }
@@ -674,43 +911,22 @@ bool HttpApi::begin(){
       }
     }
 
-    // Respond early
+    // Respond immediately (don’t block the HTTP task)
     req->send(202, "application/json", "{\"ok\":true,\"started\":true}");
 
-    // Defer work to background
-    struct StartTaskArg { UploaderService* up; LogRepo* repo; UploadCfg cfg; };
-    auto* arg = new StartTaskArg{ &up_, &repo_, uc };
-    xTaskCreatePinnedToCore(
-      [](void* p){
-        auto* a = static_cast<StartTaskArg*>(p);
-        a->up->set(a->cfg);
-        // Optional: seed minimal mock data if repo empty to verify end-to-end
-        auto existing = a->repo->listAll(1);
-        if (existing.empty()){
-          const char* mock_scanner = "SCANNER_STORAGE";
-          for (int i=0;i<5;i++){
-            domain::LogEntry e;
-            e.scanner_id = std::string(mock_scanner);
-            e.rfid = std::string("RFID-") + std::to_string(1000+i);
-            e.ts_iso = "2025-01-01T00:00:00Z";
-            e.sent=false;
-            a->repo->append(e);
-          }
-          Serial.println("[UP] Seeded 5 mock log entries (same scanner_id)");
-        }
-        a->up->setEnabled(true);
-        a->up->armWarmup(3000);
-        a->up->ensureTask();
-        delete a;
-        vTaskDelete(nullptr);
-      },
-      "start_upload_bg",
-      4096,
-      arg,
-      1,
-      nullptr,
-      1 /* APP CPU */);
+    // Do the tiny start work inline after reply (no extra task, avoids WDT)
+    up_.set(uc);
+    // non-blocking: ask the worker to do it
+    if (uc.use_sd_csv && resetCursor) {
+      Serial.println("[UPLOAD] Resetting CSV cursor as requested");
+      up_.requestCursorReset();
+    }
+    up_.setEnabled(true);
+    up_.armWarmup(1500);                   // short grace to avoid racing right after HTTP route
+    up_.ensureTask();                      // spawns the real uploader task (large stack)
+    Serial.println("[UPLOAD] Started");
   });
+
 
   server.on("/api/upload/stop", HTTP_POST, [&, hasSession](AsyncWebServerRequest* req){
     if (!(isLoggedIn || hasSession(req))) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
@@ -864,6 +1080,57 @@ bool HttpApi::begin(){
     f.close(); SDfs.unlock();
     out += "]}";
     req->send(200, "application/json", out);
+  });
+
+  
+  // GET /api/file?fs=sd|lfs&path=/file&dl=1
+  server.on("/api/file", HTTP_GET, [&, hasSession](AsyncWebServerRequest* req){
+    if (!(isLoggedIn || hasSession(req))) {
+      sendJsonText(req, 401, "{\"error\":\"unauthorized\"}");
+      return;
+    }
+
+    String fs  = req->hasParam("fs")   ? req->getParam("fs")->value()   : "sd";
+    String path= req->hasParam("path") ? req->getParam("path")->value() : "";
+    bool dl    = req->hasParam("dl");
+
+    // Basic validation + sanitization
+    path.trim();
+    if (path.length() == 0) { sendJsonText(req, 400, "{\"error\":\"missing_path\"}"); return; }
+    if (!path.startsWith("/")) path = "/" + path;
+    if (path.indexOf("..") >= 0) { sendJsonText(req, 400, "{\"error\":\"invalid_path\"}"); return; }
+
+    String data;
+    bool ok = false;
+
+    // Default to SD; allow explicit "lfs" / "littlefs"
+    if (fs.equalsIgnoreCase("sd")) {
+      ok = SDfs.readAll(path.c_str(), data);
+    } else if (fs.equalsIgnoreCase("lfs") || fs.equalsIgnoreCase("littlefs")) {
+      ok = readAllFileFS(path.c_str(), data);
+    } else {
+      sendJsonText(req, 400, "{\"error\":\"invalid_fs\"}");
+      return;
+    }
+
+    if (!ok) {
+      // Not found or failed to read
+      sendJsonText(req, 404, "{\"error\":\"open_failed\"}");
+      return;
+    }
+
+    const char* mime = guessMime(path);
+
+    // Stream back the file content
+    auto* resp = req->beginResponse(200, mime, data);
+    resp->addHeader("Cache-Control", "no-store");
+    if (dl) {
+      // Force download if requested
+      String fname = path.substring(path.lastIndexOf('/') + 1);
+      if (!fname.length()) fname = "download.bin";
+      resp->addHeader("Content-Disposition", String("attachment; filename=\"") + fname + "\"");
+    }
+    req->send(resp);
   });
 
   // Captive portal helpers for Android/iOS/Windows
