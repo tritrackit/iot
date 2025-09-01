@@ -10,19 +10,23 @@
 #include <algorithm>
 #include <string>
 
-// Task entry trampoline
+// ─────────────────────────────────────────────────────────────
+// Task trampoline
+// ─────────────────────────────────────────────────────────────
 static void uploader_task_entry(void* arg){
   static_cast<UploaderService*>(arg)->taskLoop();
 }
 
-// ───────────────────────── Lifecycle ─────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Lifecycle
+// ─────────────────────────────────────────────────────────────
 void UploaderService::armWarmup(uint32_t ms){
   warmup_deadline_ms_ = millis() + ms;
 }
 
 void UploaderService::ensureTask(){
   if (task_) return;
-  const uint32_t stackWords = 6144; // ~24KB (TLS + JSON headroom)
+  const uint32_t stackWords = 6144; // ~24KB
   BaseType_t rc = xTaskCreatePinnedToCore(
     uploader_task_entry,
     "upl_task",
@@ -30,7 +34,7 @@ void UploaderService::ensureTask(){
     this,
     1,
     &task_,
-    1 /* pin to APP CPU; avoid starving async_tcp on core 0 */);
+    1 /* pin to APP CPU; keep core 0 lighter for wifi/async tcp */);
   if (rc != pdPASS){
     task_ = nullptr;
     enabled_ = false;
@@ -38,47 +42,47 @@ void UploaderService::ensureTask(){
   }
 }
 
-// ───────────────────────── Spool helpers ─────────────────────────
-// Accepts:
-//   LOG.<rfid>.<scanner>
-//   LOG.<rfid>.<scanner>.<n>   (collision suffix)
-bool UploaderService::parseSpoolBase(const String& base, String& rfid, String& scanner) {
+// ─────────────────────────────────────────────────────────────
+// Spool helpers  (filename = LOG.<rfid>.<YYYYMMDDHHMMSS>.<scanner>[.N])
+// ─────────────────────────────────────────────────────────────
+
+// Convert 14-digit yyyymmddhhmmss -> "YYYY-MM-DD HH:MM:SS"
+static String digits14ToIso(const String& ts14){
+  if (ts14.length() != 14) return String("");
+  const char* s = ts14.c_str();
+  for (int i=0;i<14;i++) if (s[i]<'0' || s[i]>'9') return String("");
+  char buf[20];
+  snprintf(buf,sizeof(buf), "%c%c%c%c-%c%c-%c%c %c%c:%c%c:%c%c",
+           s[0],s[1],s[2],s[3], s[4],s[5], s[6],s[7],
+           s[8],s[9], s[10],s[11], s[12],s[13]);
+  return String(buf);
+}
+
+// base must be just the filename (no directory)
+static bool parseSpoolBaseNew(const String& base, String& rfid, String& tsIso, String& scanner){
   if (!base.startsWith("LOG.")) return false;
 
-  const int dot1 = base.indexOf('.', 4);             // split RFID / scanner
-  if (dot1 < 0) return false;
+  // Expect: LOG.<rfid>.<YYYYMMDDHHMMSS>.<scanner>[.N]
+  int p1 = base.indexOf('.', 4);        if (p1 < 0) return false;           // after rfid
+  int p2 = base.indexOf('.', p1 + 1);   if (p2 < 0) return false;           // after ts14
+  int p3 = base.indexOf('.', p2 + 1);   // optional suffix
 
-  const int dot2 = base.indexOf('.', dot1 + 1);      // optional suffix start
+  rfid = base.substring(4, p1);
+  String ts14 = base.substring(p1 + 1, p2);
+  scanner = (p3 >= 0) ? base.substring(p2 + 1, p3)
+                      : base.substring(p2 + 1);
 
-  rfid = base.substring(4, dot1);
-  if (dot2 < 0) {
-    scanner = base.substring(dot1 + 1);
-  } else {
-    scanner = base.substring(dot1 + 1, dot2);
-  }
+  if (rfid.length()==0 || scanner.length()==0) return false;
 
-  return rfid.length() > 0 && scanner.length() > 0;
+  tsIso = digits14ToIso(ts14);
+  // We still accept empty tsIso (if malformed) to avoid dropping the item
+  return true;
 }
 
 String UploaderService::baseName(const char* p){
   String s(p ? p : "");
   int k = s.lastIndexOf('/');
   return (k >= 0) ? s.substring(k+1) : s;
-}
-
-bool UploaderService::readSmallTextFile(const String& path, String& out) {
-  out = "";
-  File f = SD.open(path.c_str(), FILE_READ);
-  if (!f) return false;
-  while (f.available()) {
-    int c = f.read();
-    if (c < 0) break;
-    if (c == '\r' || c == '\n') break;
-    out += (char)c;
-    if (out.length() > 64) break; // guard
-  }
-  f.close();
-  return out.length() > 0;
 }
 
 bool UploaderService::spoolListGrouped(size_t max_total,
@@ -90,7 +94,7 @@ bool UploaderService::spoolListGrouped(size_t max_total,
 
   sdfs_->lock();
 
-  // Ensure spool dir exists (LoRa writer should create; double-ensure here)
+  // Ensure dir exists (LoRa should create it, but make it robust)
   if (!SD.exists(cfg_.spool_dir.c_str())) {
     SD.mkdir(cfg_.spool_dir.c_str());
   }
@@ -112,18 +116,14 @@ bool UploaderService::spoolListGrouped(size_t max_total,
 
     if (!base.startsWith("LOG.")) continue;
 
-    String rfid, scanner;
-    if (!parseSpoolBase(base, rfid, scanner)) continue;
+    String rfid, tsIso, scanner;
+    if (!parseSpoolBaseNew(base, rfid, tsIso, scanner)) continue;
 
     SpoolItem it;
     it.path    = String(cfg_.spool_dir.c_str()) + "/" + base;
     it.rfid    = rfid;
     it.scanner = scanner;
-
-    // Best-effort timestamp: first line of the file
-    String ts;
-    readSmallTextFile(it.path, ts);
-    it.ts = ts;
+    it.ts      = tsIso; // extracted from filename
 
     byScanner[scanner].push_back(std::move(it));
 
@@ -135,11 +135,15 @@ bool UploaderService::spoolListGrouped(size_t max_total,
   dir.close();
   sdfs_->unlock();
 
-  // Stable order inside each scanner group (RFID lexical)
+  // Stable order inside each scanner group (by ts then RFID, fallback to RFID)
   for (auto& kv : byScanner) {
     auto& vec = kv.second;
     std::sort(vec.begin(), vec.end(),
-      [](const SpoolItem& a, const SpoolItem& b){ return a.rfid.compareTo(b.rfid) < 0; });
+      [](const SpoolItem& a, const SpoolItem& b){
+        int c = a.ts.compareTo(b.ts);
+        if (c == 0) c = a.rfid.compareTo(b.rfid);
+        return c < 0;
+      });
   }
 
   return true;
@@ -160,13 +164,15 @@ bool UploaderService::spoolDeleteFiles(const std::vector<SpoolItem>& items){
   return all;
 }
 
-// ───────────────────────── Worker loop ─────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Worker loop
+// ─────────────────────────────────────────────────────────────
 void UploaderService::taskLoop(){
   uint32_t    next_due = 0;
   wl_status_t prevSta  = WL_DISCONNECTED;
 
   for(;;){
-    // Optional warmup to avoid racing early HTTP
+    // optional warmup
     if (warmup_deadline_ms_){
       int32_t t = (int32_t)(warmup_deadline_ms_ - millis());
       if (t > 0){ vTaskDelay(pdMS_TO_TICKS(t > 100 ? 100 : t)); continue; }
@@ -209,7 +215,7 @@ void UploaderService::taskLoop(){
       Serial.printf(" Spool dir: %s\n", cfg_.spool_dir.c_str());
       const size_t want = (cfg_.batch_size ? cfg_.batch_size : 50);
 
-      // Scan a little extra so we can form per-scanner batches
+      // scan a bit more to form groups
       std::map<String, std::vector<SpoolItem>> groups;
       bool okList = spoolListGrouped(want * 8, groups);
       if (!okList) {
@@ -224,7 +230,7 @@ void UploaderService::taskLoop(){
         continue;
       }
 
-      // Pick the first non-empty scanner group (keeps per-cycle load steady)
+      // Pick first non-empty scanner group
       auto it = groups.begin();
       while (it != groups.end() && it->second.empty()) ++it;
       if (it == groups.end()) {
@@ -239,7 +245,7 @@ void UploaderService::taskLoop(){
 
       Serial.printf("[UP] Spool: scanner=%s items=%u\n", scanner.c_str(), (unsigned)items.size());
       for (auto& si : items) {
-        Serial.printf("  file=%s rfid=%s\n", si.path.c_str(), si.rfid.c_str());
+        Serial.printf("  file=%s rfid=%s ts=%s\n", si.path.c_str(), si.rfid.c_str(), si.ts.c_str());
       }
 
       // Build JSON: {"data":[{"rfid":"..","timestamp":".."}, ...]}
@@ -248,7 +254,7 @@ void UploaderService::taskLoop(){
       for (size_t i=0;i<items.size();++i){
         if (i) body += ',';
         body += "{\"rfid\":\""; body += items[i].rfid.c_str();
-        body += "\",\"timestamp\":\""; body += (items[i].ts.length()? items[i].ts.c_str() : "");
+        body += "\",\"timestamp\":\""; body += items[i].ts.length()? items[i].ts.c_str() : "";
         body += "\"}";
       }
       body += "]}";
@@ -260,7 +266,7 @@ void UploaderService::taskLoop(){
       const std::string apiKey = scanner.length() ? std::string(scanner.c_str())
                                                   : std::string("SCANNER_UNKNOWN");
 
-      delay(0); // let LWIP/async_tcp breathe
+      delay(0);
 
       for (uint8_t attempt=0; attempt<=cfg_.retry_count; ++attempt){
         bool ok = net_.postJson(cfg_.api, body, code, resp, apiKey);
@@ -292,7 +298,7 @@ void UploaderService::taskLoop(){
       continue;
     }
 
-    // ======== REPO MODE (fallback, unchanged) ========
+    // ======== REPO MODE (fallback) ========
     auto window = repo_.listUnsent((size_t)500);
     if (window.empty()) { next_due = millis() + cfg_.interval_ms; continue; }
 

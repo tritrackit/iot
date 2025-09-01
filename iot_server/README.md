@@ -7,6 +7,9 @@ MISO (SD): D19 (GPIO19)
 MOSI (SD): D23 (GPIO23)
 CS (SD): D13 (GPIO13)
 Power: 3V3 and GND shared
+
+
+
 LoRa Module (SX1276/RFM9x)
 
 NSS/CS: D27 (GPIO27)

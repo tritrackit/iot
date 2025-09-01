@@ -58,5 +58,6 @@
         "cinttypes": "cpp",
         "typeinfo": "cpp"
     },
-    "chatgpt.openOnStartup": true
+    "chatgpt.openOnStartup": true,
+    "C_Cpp.errorSquiggles": "disabled"
 }

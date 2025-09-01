@@ -131,85 +131,6 @@ static void splitLinesFromTail(const String& chunk, std::vector<String>& out, bo
   }
 }
 
-// --- helper: tail last N lines from SD (efficient backward read)
-static bool tailCsvLines_SD(const char* path, size_t maxLines, std::vector<String>& outLines) {
-  outLines.clear();
-  File f = SD.open(path, FILE_READ);
-  if (!f) return false;
-
-  const size_t CHUNK = 1024;
-  size_t size = f.size();
-  if (size == 0) { f.close(); return true; }
-
-  // Work backwards from end of file
-  long pos = (long)size;
-  bool firstChunk = true;
-
-  while (pos > 0 && outLines.size() < maxLines + 1 /* include potential header to filter */) {
-    size_t toRead = (pos >= (long)CHUNK) ? CHUNK : (size_t)pos;
-    pos -= (long)toRead;
-
-    f.seek(pos);
-    String chunk; chunk.reserve(toRead);
-    for (size_t i = 0; i < toRead; ++i) chunk += (char)f.read();
-
-    // For the very last portion (end of file), ensure trailing segment gets included
-    bool appendToFirst = !firstChunk;
-    splitLinesFromTail(chunk, outLines, appendToFirst);
-    firstChunk = false;
-  }
-
-  f.close();
-
-  // Now outLines is newest→oldest because we inserted at front while walking backward.
-  // Trim to maxLines (excluding header if present).
-  // Detect header (optional)
-  if (!outLines.empty()) {
-    const String& first = outLines.front();
-    if (first.startsWith("scanner,rfid,timestamp")) {
-      // Drop header for JSON parsing; keep it for CSV raw mode as needed
-      // We'll handle header decision in the endpoint.
-    } else {
-      // If the *last* line looks like header (because of reverse merging), move it to front
-      // Typically not needed with our logic; keep simple.
-    }
-  }
-
-  // Keep at most maxLines + (optional 1 header)
-  if (outLines.size() > maxLines + 1) {
-    // Preserve newest lines (front is newest due to reverse insert)
-    outLines.erase(outLines.begin() + (maxLines + 1), outLines.end());
-  }
-
-  return true;
-}
-
-// --- helper: tail last N lines from LittleFS (for completeness)
-static bool tailCsvLines_LFS(const char* path, size_t maxLines, std::vector<String>& outLines) {
-  outLines.clear();
-  File f = LittleFS.open(path, "r");
-  if (!f) return false;
-  // Simpler approach (files here are usually small): read all and split
-  String all; all.reserve(f.size() ? f.size() : 1024);
-  while (f.available()) all += (char)f.read();
-  f.close();
-
-  // Split into lines
-  std::vector<String> lines;
-  int start = 0;
-  while (true) {
-    int nl = all.indexOf('\n', start);
-    if (nl < 0) { String tail = all.substring(start); if (tail.length()) lines.push_back(tail); break; }
-    lines.push_back(all.substring(start, nl));
-    start = nl + 1;
-  }
-  // Take last maxLines + optional header
-  if (lines.size() > maxLines + 1) {
-    lines.erase(lines.begin(), lines.end() - (maxLines + 1));
-  }
-  outLines = std::move(lines);
-  return true;
-}
 // ---- REST ----
 static void installWifiRoutes(ConfigStore& store){
   // GET /api/wifi/status
@@ -692,7 +613,7 @@ bool HttpApi::begin(){
     }
   );
 
-   // /api/logs  -> list UNSENT items from spool (files named LOG.<rfid>.<scanner>)
+  // /api/logs  -> list UNSENT items from spool (LOG.<rfid>.<YYYYMMDDHHMMSS>.<scanner>)
   server.on("/api/logs", HTTP_GET, [&, hasSession](AsyncWebServerRequest* req){
     if (!(isLoggedIn || hasSession(req))) {
       sendJsonText(req, 401, "{\"error\":\"unauthorized\"}");
@@ -711,17 +632,49 @@ bool HttpApi::begin(){
       int p = path.lastIndexOf('/');
       return (p >= 0) ? path.substring(p+1) : path;
     };
-    auto parseSpoolName = [](const String& base, String& rfid, String& scanner)->bool {
-      // expect "LOG.<rfid>.<scanner>"
+
+    // filename: LOG.<rfid>.<YYYYMMDDHHMMSS>.<scanner>[.N]
+    auto parseSpoolName = [](const String& base, String& rfid, String& ts14, String& scanner)->bool {
       if (!base.startsWith("LOG.")) return false;
-      int d1 = base.indexOf('.', 4);   // first dot after "LOG."
+
+      int d1 = base.indexOf('.', 4);            // after "LOG."
       if (d1 < 0) return false;
-      rfid    = base.substring(4, d1);
-      scanner = base.substring(d1 + 1);
-      return rfid.length() && scanner.length();
+      int d2 = base.indexOf('.', d1 + 1);       // after ts14
+      if (d2 < 0) return false;
+
+      rfid = base.substring(4, d1);
+      ts14 = base.substring(d1 + 1, d2);
+
+      // scanner may have optional collision suffix ".N" -> strip it if present
+      int d3 = base.indexOf('.', d2 + 1);
+      scanner = (d3 < 0) ? base.substring(d2 + 1)
+                        : base.substring(d2 + 1, d3);
+
+      // validate pieces
+      if (rfid.isEmpty() || scanner.isEmpty()) return false;
+      if (ts14.length() != 14) return false;
+      for (size_t i=0;i<ts14.length();++i) {
+        if (ts14[i] < '0' || ts14[i] > '9') return false;
+      }
+      return true;
     };
 
-    struct Item { String scanner; String rfid; String fname; };
+    auto ts14ToIso = [](const String& ts14)->String {
+      // ts14 = YYYYMMDDHHMMSS
+      if (ts14.length() != 14) return String("");
+      String iso;
+      iso.reserve(19);
+      iso  = ts14.substring(0,4)  + "-"  // YYYY-
+          +  ts14.substring(4,6)  + "-"  // MM-
+          +  ts14.substring(6,8)  + " "  // DD␠
+          +  ts14.substring(8,10) + ":"  // HH:
+          +  ts14.substring(10,12)+ ":"  // MM:
+          +  ts14.substring(12,14);      // SS
+      return iso;
+    };
+
+    struct Item { String scanner; String rfid; String ts14; String fname; };
+
     std::vector<Item> items;
     items.reserve(limit ? limit : 64);
 
@@ -739,21 +692,29 @@ bool HttpApi::begin(){
     for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
       if (!f.isDirectory()) {
         String base = basenameOf(f.name());
-        String rfid, scanner;
-        if (parseSpoolName(base, rfid, scanner)) {
-          items.push_back({scanner, rfid, base});
+        String rfid, ts14, scanner;
+        if (parseSpoolName(base, rfid, ts14, scanner)) {
+          items.push_back({scanner, rfid, ts14, base});
         }
       }
       f.close();
-      if (items.size() >= (limit ? (limit * 4) : 400)) break; // soft cap
+      // soft cap on scanning so we don't spend forever in a huge dir
+      if (items.size() >= (limit ? (limit * 8) : 800)) break;
     }
     dir.close();
     SDfs.unlock();
 
-    // ---- limit (keep last N scanned; SD dir order is implementation-defined) ----
-    if (items.size() > limit) {
-      items.erase(items.begin(), items.end() - (ptrdiff_t)limit);
-    }
+    // ---- sort newest -> oldest by timestamp (then scanner, then rfid) ----
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b){
+      int tc = a.ts14.compareTo(b.ts14);
+      if (tc != 0) return tc > 0; // newer first
+      int sc = a.scanner.compareTo(b.scanner);
+      if (sc != 0) return sc < 0;
+      return a.rfid.compareTo(b.rfid) < 0;
+    });
+
+    // ---- limit to requested count ----
+    if (items.size() > limit) items.resize(limit);
 
     // ---- render JSON ----
     StaticJsonDocument<16384> doc;
@@ -762,7 +723,7 @@ bool HttpApi::begin(){
       JsonObject o = arr.createNestedObject();
       o["scanner_id"] = it.scanner;
       o["rfid"]       = it.rfid;
-      o["timestamp"]  = "";   // no ts in filename
+      o["timestamp"]  = ts14ToIso(it.ts14);  // derived from filename
       o["code"]       = 0;
       o["msg"]        = "";
     }
@@ -886,46 +847,54 @@ bool HttpApi::begin(){
     sendJson(req,200,d.as<JsonVariantConst>());
   });
 
-  // /api/upload/start  -> start uploader (CSV by default), non-blocking
+  // /api/upload/start  -> start uploader (SPOOL by default), non-blocking
   server.on("/api/upload/start", HTTP_POST, [&, hasSession](AsyncWebServerRequest* req){
     if (!(isLoggedIn || hasSession(req))) {
       req->send(401, "application/json", "{\"error\":\"unauthorized\"}");
       return;
     }
 
-    // Build effective config (prefer SD)
+    // ---- Build effective config from stored /config.json if fields are missing
     UploadCfg uc = up_.cfg();
     if (uc.api.empty() || uc.interval_ms == 0){
-      String raw; StaticJsonDocument<512> cfg;
-      if (SDfs.readAll("/config.json", raw) && !deserializeJson(cfg, raw)){
-        uc.api = (const char*)(cfg["api_url"] | cfg["apiUrl"] | uc.api.c_str());
+      String raw;
+      JsonDocument cfg;
+      if (SDfs.readAll("/config.json", raw) == true && !deserializeJson(cfg, raw)) {
+        if (uc.api.empty()) {
+          uc.api = (const char*)(cfg["api_url"] | cfg["apiUrl"] | "");
+        }
         uint32_t iv = (uint32_t)(cfg["upload_interval"] | cfg["intervalMs"] | 0);
         if (iv) uc.interval_ms = iv;
       }
     }
 
-    // Source: FORCE CSV by default (oldest -> newest from /logs.csv)
-    uc.use_sd_csv = true;
-    uc.csv_path   = "/logs.csv";
+    // ---- Spool is the default source
+    uc.use_sd_spool = true;
+    uc.spool_dir    = uc.spool_dir.length() ? uc.spool_dir : String(F("/spool"));
+
+    // Optional overrides from query/body params
     if (req->hasParam("source")) {
       String src = req->getParam("source")->value();
-      if (src.equalsIgnoreCase("repo")) uc.use_sd_csv = false;  // optional fallback
+      // "repo" -> disable SD spool (fallback to in-memory repo)
+      uc.use_sd_spool = !src.equalsIgnoreCase("repo");
     }
-    if (req->hasParam("csv")) {
-      uc.csv_path = req->getParam("csv")->value().c_str();
+    if (req->hasParam("dir")) {
+      String d = req->getParam("dir")->value();
+      if (!d.startsWith("/")) d = "/" + d;
+      uc.spool_dir = d;
+    }
+    if (req->hasParam("batch")) {
+      long v = req->getParam("batch")->value().toInt();
+      if (v > 0 && v <= 500) uc.batch_size = (size_t)v;
+    }
+    if (req->hasParam("intervalMs")) {
+      long v = req->getParam("intervalMs")->value().toInt();
+      if (v >= 1000) uc.interval_ms = (uint32_t)v;
     }
 
-    Serial.printf(uc.use_sd_csv ? "[UPLOAD] Using SD CSV '%s'\n" : "[UPLOAD] Using REPO\n", uc.csv_path.c_str());
-
-    // Optional: allow client to reset CSV cursor so upload restarts from the top
-    bool resetCursor = req->hasParam("resetCursor");
-
-
-    Serial.printf("[UPLOAD] Start request: api='%s' interval=%ums batch=%u csv='%s' resetCursor=%d\n",
-      uc.api.c_str(), (unsigned)uc.interval_ms, (unsigned)uc.batch_size, uc.csv_path.c_str(), resetCursor ? 1 : 0);
-    // Validate
+    // ---- Validate
     if (uc.api.empty()){ req->send(400, "application/json", "{\"error\":\"missing_api_url\"}"); return; }
-    if (uc.interval_ms <= 1000){ req->send(400, "application/json", "{\"error\":\"interval_too_low\"}"); return; }
+    if (uc.interval_ms < 1000){ req->send(400, "application/json", "{\"error\":\"interval_too_low\"}"); return; }
     if (WiFi.status() != WL_CONNECTED){ req->send(409, "application/json", "{\"error\":\"sta_not_connected\"}"); return; }
     {
       String api = uc.api.c_str(); api.toLowerCase();
@@ -935,19 +904,39 @@ bool HttpApi::begin(){
       }
     }
 
-    // Respond immediately (don’t block the HTTP task)
-    req->send(202, "application/json", "{\"ok\":true,\"started\":true}");
-
-    // Do the tiny start work inline after reply (no extra task, avoids WDT)
-    up_.set(uc);
-    // non-blocking: ask the worker to do it
-    if (uc.use_sd_csv && resetCursor) {
-      Serial.println("[UPLOAD] Resetting CSV cursor as requested");
-      up_.requestCursorReset();
+    // If using SD spool, make sure SD is mounted and directory exists
+    if (uc.use_sd_spool) {
+      SDfs.lock();
+      bool mounted = SDfs.isMounted();
+      if (mounted) {
+        if (!SD.exists(uc.spool_dir.c_str())) {
+          SD.mkdir(uc.spool_dir.c_str());
+        }
+      }
+      SDfs.unlock();
+      if (!mounted) { req->send(500, "application/json", "{\"error\":\"sd_not_mounted\"}"); return; }
     }
+
+    // ---- Respond immediately (do not block HTTP task)
+    {
+      StaticJsonDocument<256> resp;
+      resp["ok"] = true;
+      resp["started"] = true;
+      resp["mode"] = uc.use_sd_spool ? "spool" : "repo";
+      resp["spool_dir"] = uc.use_sd_spool ? uc.spool_dir : "";
+      String out; serializeJson(resp, out);
+      req->send(202, "application/json", out);
+    }
+
+    // ---- Kick the worker
+    up_.set(uc);
     up_.setEnabled(true);
-    up_.armWarmup(1500);                   // short grace to avoid racing right after HTTP route
-    up_.ensureTask();                      // spawns the real uploader task (large stack)
+    up_.armWarmup(1500);   // short grace to avoid racing immediately after HTTP route
+    up_.ensureTask();
+
+    Serial.printf("[UPLOAD] Start request: api='%s' interval=%ums batch=%u mode=%s spool_dir='%s'\n",
+      uc.api.c_str(), (unsigned)uc.interval_ms, (unsigned)uc.batch_size,
+      uc.use_sd_spool ? "spool" : "repo", uc.spool_dir.c_str());
     Serial.println("[UPLOAD] Started");
   });
 

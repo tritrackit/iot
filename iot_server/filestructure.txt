@@ -466,7 +466,6 @@
     |-- infra
         |-- config_store.cpp
         |-- config_store.h
-        |-- csv_log_repo.cpp
         |-- library.json
         |-- log_repo.h
         |-- lora_port.h
