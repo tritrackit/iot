@@ -391,37 +391,6 @@ bool HttpApi::begin(){
     }
     lfs_unlock();
   }
-  // Ensure SD:/config.json exists with sane defaults at boot (not only on API read)
-  {
-    SDfs.lock();
-    bool mounted = SDfs.isMounted();
-    if (mounted){
-      const char* CFG_JSON = "/config.json";
-      String raw;
-      bool have = SDfs.readAll(CFG_JSON, raw);
-      StaticJsonDocument<512> d;
-      if (have){
-        // try parse; if it fails, rewrite defaults
-        if (deserializeJson(d, raw)) have = false;
-      }
-      if (!have){
-        // defaults
-        d.clear();
-        d["auth_user"]        = "admin";
-        d["auth_password"]    = "admin";
-        d["wifi_ap_ssid"]     = "Device-Portal";
-        d["wifi_ap_password"] = "12345678";
-        d["wifi_sta_ssid"]    = "";
-        d["wifi_sta_password"]= "";
-        d["api_url"]          = "";
-        d["upload_interval"]  = 0;
-        String out; serializeJson(d, out);
-        SDfs.writeAll(CFG_JSON, out);
-      }
-    }
-    SDfs.unlock();
-  }
-
   installWifiRoutes(cfg);
 
   // === Auth + Config + Logs (for frontend) ===
@@ -449,20 +418,6 @@ bool HttpApi::begin(){
   };
   loadAuthFromFile();
 
-  // Apply saved uploader cfg on boot if present (from SD-backed config)
-  {
-    String raw;
-    if (SDfs.readAll("/config.json", raw)){
-      StaticJsonDocument<512> d;
-      if (!deserializeJson(d, raw)){
-        UploadCfg uc;
-        uc.api = (const char*)(d["api_url"] | d["apiUrl"] | "");
-        uc.interval_ms = (uint32_t)(d["upload_interval"] | d["intervalMs"] | 0);
-        uc.batch_size = 10;
-        up_.set(uc);
-      }
-    }
-  }
 
   auto saveAuthToFile = [&](){
     if (!lfs_ok) return;
@@ -512,10 +467,14 @@ bool HttpApi::begin(){
   server.on("/api/config", HTTP_GET, [&, hasSession](AsyncWebServerRequest* req){
     if (!(isLoggedIn || hasSession(req))) { sendJsonText(req,401,"{\"error\":\"unauthorized\"}"); return; }
     const char* CFG_JSON = "/config.json";
-    StaticJsonDocument<512> src; bool existed=false;
+    StaticJsonDocument<512> src; 
+    bool existed=false;
     {
       String raw;
-      if (SDfs.readAll(CFG_JSON, raw)) { deserializeJson(src, raw); existed=true; }
+      if (SDfs.readAll(CFG_JSON, raw)) { 
+        deserializeJson(src, raw); 
+        existed=true; 
+      }
     }
 
     // Build normalized view with defaults and legacy fallbacks

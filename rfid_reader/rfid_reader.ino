@@ -3,6 +3,70 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include <Adafruit_PN532.h>
+#include <EEPROM.h>
+
+/* ===================== Unique ID (SCANNER_CODE) ===================== */
+// Allowed characters: digits, uppercase letters, underscore
+static const char kCharset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+static const uint8_t ID_LENGTH = 16;            // adjust length if you want
+static const uint16_t EEPROM_MARK_ADDR = 0;     // 1 byte marker
+static const uint16_t EEPROM_LEN_ADDR  = 1;     // 1 byte length
+static const uint16_t EEPROM_ID_ADDR   = 2;     // ID bytes start here
+static const uint8_t EEPROM_MARKER     = 0xA7;  // "has ID" marker
+
+char SCANNER_CODE[ID_LENGTH + 1];               // global scanner code buffer
+
+// Better entropy for Nano: sample A0 multiple times
+static uint32_t readEntropy32() {
+  uint32_t v = 0;
+  for (int i = 0; i < 32; i++) {
+    v <<= 1;
+    v |= (analogRead(A0) & 0x01);
+    delay(1);
+  }
+  return v ^ micros();
+}
+
+static void seedRng() {
+  // Make sure A0 is floating or add a high impedance noise source
+  randomSeed(readEntropy32());
+}
+
+static void generateId(char* out, uint8_t n) {
+  for (uint8_t i = 0; i < n; i++) {
+    int r = random(sizeof(kCharset) - 1); // exclude null terminator
+    out[i] = kCharset[r];
+  }
+  out[n] = '\0';
+}
+
+static void saveIdToEeprom(const char* id, uint8_t n) {
+  EEPROM.write(EEPROM_MARK_ADDR, EEPROM_MARKER);
+  EEPROM.write(EEPROM_LEN_ADDR, n);
+  for (uint8_t i = 0; i < n; i++) {
+    EEPROM.write(EEPROM_ID_ADDR + i, id[i]);
+  }
+}
+
+static bool loadIdFromEeprom(char* out, uint8_t n_expected) {
+  if (EEPROM.read(EEPROM_MARK_ADDR) != EEPROM_MARKER) return false;
+  uint8_t n = EEPROM.read(EEPROM_LEN_ADDR);
+  if (n != n_expected) return false; // length mismatch -> regenerate
+  for (uint8_t i = 0; i < n; i++) {
+    out[i] = (char)EEPROM.read(EEPROM_ID_ADDR + i);
+    // quick sanity check: must be in charset (skip strict check to save cycles)
+  }
+  out[n] = '\0';
+  return true;
+}
+
+static void getOrCreateScannerCode(char* out, uint8_t n) {
+  if (!loadIdFromEeprom(out, n)) {
+    seedRng();
+    generateId(out, n);
+    saveIdToEeprom(out, n);
+  }
+}
 
 /* ===================== LoRa wiring (Arduino Nano) ===================== */
 // HW SPI: SCK=D13, MISO=D12, MOSI=D11
@@ -47,9 +111,6 @@ Adafruit_PN532 nfc(PN532_IRQ, PN532_RST, &Wire);
 #define DEST_ID    0x02       // target receiver
 #define BROADCAST  0xFF
 
-/* ===================== App identity ===================== */
-#define SCANNER_CODE "SCANNER_1"
-
 /* ===================== Header ===================== */
 struct __attribute__((packed)) MsgHdr {
   uint8_t net, dst, src, seq, len;
@@ -90,7 +151,7 @@ void buzz_ok_loud() {
   tone(BUZZER_PIN, BUZZ_OK_CHIRP1_FREQ, BUZZ_OK_CHIRP_MS);
   delay(BUZZ_OK_CHIRP_MS + BUZZ_OK_GAP_MS);
   tone(BUZZER_PIN, BUZZ_OK_CHIRP2_FREQ, BUZZ_OK_CHIRP_MS);
-  delay(BUZZER_PIN ? (BUZZ_OK_CHIRP_MS + BUZZ_OK_GAP_MS) : 0);
+  delay(BUZZ_OK_CHIRP_MS + BUZZ_OK_GAP_MS);
   tone(BUZZER_PIN, BUZZ_OK_CHIRP3_FREQ, BUZZ_OK_CHIRP_MS + 40);  // slightly longer final chirp
   delay(BUZZ_OK_CHIRP_MS + 40);
   noTone(BUZZER_PIN);
@@ -124,6 +185,11 @@ void buzz_error_loud() {
 void setup() {
   Serial.begin(115200);
   while (!Serial) {}
+
+  // Initialize / get persistent unique SCANNER_CODE
+  getOrCreateScannerCode(SCANNER_CODE, ID_LENGTH);
+  Serial.print(F("SCANNER_CODE: "));
+  Serial.println(SCANNER_CODE);
 
   pinMode(BUZZER_PIN, OUTPUT);
 #if !PASSIVE_BUZZER
@@ -168,7 +234,7 @@ void loop() {
     String uidHex; uidHex.reserve(uidLength * 2);
     for (uint8_t i = 0; i < uidLength; i++) uidHex += hex2(uid[i]);
 
-    // CSV payload
+    // CSV payload: <SCANNER_CODE>,<UIDHEX>
     String payload = String(SCANNER_CODE) + "," + uidHex;
 
     Serial.print(F("TX -> DST 0x")); Serial.print(DEST_ID, HEX);
