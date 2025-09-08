@@ -510,4 +510,5 @@
 |-- LICENSE
 |-- README.md
 |-- rfid_reader
+    |-- README.md
     |-- rfid_reader.ino
