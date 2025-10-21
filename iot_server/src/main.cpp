@@ -94,13 +94,13 @@ void setup(){
   Serial.println(sd_ok ? "[SD] Mounted OK (CS=13)" : "[SD] Mount FAILED (CS=13)");
 
   // ===== CONFIG LOAD (prefer SD, fallback LittleFS) =====
-  String apSsid="Device-Portal", apPass="12345678";
+  String apSsid="TRITRACKIT", apPass="12345678";
   String staSsid="", staPass="", apiUrl="";
   uint32_t uploadIntervalMs = 15000;
   {
     auto mergeAndNorm = [&](JsonDocument& src){
       JsonDocument out;
-      out["wifi_ap_ssid"]      = src["wifi_ap_ssid"]      | "Device-Portal";
+      out["wifi_ap_ssid"]      = src["wifi_ap_ssid"]      | "TRITRACKIT";
       out["wifi_ap_password"]  = src["wifi_ap_password"]  | "12345678";
       out["wifi_sta_ssid"]     = src["wifi_sta_ssid"]     | (src["ssid"]       | "");
       out["wifi_sta_password"] = src["wifi_sta_password"] | (src["password"]   | "");

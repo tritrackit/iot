@@ -481,7 +481,7 @@ bool HttpApi::begin(){
     StaticJsonDocument<512> out;
     out["auth_user"]        = src["auth_user"]        | src["user"]        | "admin";
     out["auth_password"]    = src["auth_password"]    | src["pass"]        | "admin";
-    out["wifi_ap_ssid"]     = src["wifi_ap_ssid"]     | "Device-Portal";
+    out["wifi_ap_ssid"]     = src["wifi_ap_ssid"]     | "TRITRACKIT";
     out["wifi_ap_password"] = src["wifi_ap_password"] | "12345678";
     out["wifi_sta_ssid"]    = src["wifi_sta_ssid"]    | src["ssid"]       | "";
     out["wifi_sta_password"]= src["wifi_sta_password"]| src["password"]   | "";
